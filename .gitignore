@@ -1,0 +1,5 @@
+agents/rules/**
+agents/instructions/**
+agents/outils/**
+
+frontend/**
