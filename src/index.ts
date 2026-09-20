@@ -2,6 +2,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import http from "node:http";
 import { z } from "zod";
 
 /**
@@ -227,8 +229,7 @@ export class SophiaFSM {
 /**
  * Initialisation du serveur MCP Sophia
  */
-export function createSophiaServer(): McpServer {
-  const fsm = new SophiaFSM();
+export function createSophiaServer(fsm: SophiaFSM = new SophiaFSM()): McpServer {
   const server = new McpServer({
     name: "mcp-server-sophia",
     version: "1.0.0",
@@ -443,11 +444,10 @@ export function createSophiaServer(): McpServer {
 }
 
 /**
- * Point d'entrée principal en mode Stdio.
+ * Exécution locale en mode Stdio (usage desktop / IDE).
  * STDOUT est exclusivement réservé au flux JSON-RPC.
- * Tout log d'initialisation ou d'erreur doit être émis sur STDERR via console.error.
  */
-async function main(): Promise<void> {
+async function runStdio(): Promise<void> {
   const server = createSophiaServer();
   const transport = new StdioServerTransport();
 
@@ -455,9 +455,118 @@ async function main(): Promise<void> {
   console.error("[Sophia MCP Server] Démarré avec succès sur le transport Stdio.");
 }
 
+/**
+ * Exécution distante en mode HTTP / Server-Sent Events (SSE) (usage cloud / Render / Docker).
+ */
+async function runHttp(port: number): Promise<void> {
+  // Stockage des transports actifs par identifiant de session
+  const activeSessions = new Map<string, SSEServerTransport>();
+
+  const httpServer = http.createServer(async (req, res) => {
+    // Headers CORS pour les clients Web
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    const host = req.headers.host ?? `localhost:${port}`;
+    const url = new URL(req.url ?? "/", `http://${host}`);
+
+    // Endpoint de santé pour Render et orchestrateurs
+    if (url.pathname === "/health" || url.pathname === "/") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "healthy",
+          server: "mcp-server-sophia",
+          version: "1.0.0",
+          transport: "SSE",
+          endpoints: {
+            sse: "/sse",
+            messages: "/messages",
+          },
+        })
+      );
+      return;
+    }
+
+    // Établissement du flux SSE (GET /sse)
+    if (url.pathname === "/sse" && req.method === "GET") {
+      // Instance de FSM dédiée par session client
+      const sessionFsm = new SophiaFSM();
+      const sessionServer = createSophiaServer(sessionFsm);
+      const sseTransport = new SSEServerTransport("/messages", res);
+
+      activeSessions.set(sseTransport.sessionId, sseTransport);
+
+      sseTransport.onclose = () => {
+        activeSessions.delete(sseTransport.sessionId);
+        console.error(`[Sophia SSE] Session fermée : ${sseTransport.sessionId}`);
+      };
+
+      await sessionServer.connect(sseTransport);
+      console.error(`[Sophia SSE] Nouvelle session connectée : ${sseTransport.sessionId}`);
+      return;
+    }
+
+    // Réception des messages JSON-RPC (POST /messages?sessionId=...)
+    if (url.pathname === "/messages" && req.method === "POST") {
+      const sessionId = url.searchParams.get("sessionId");
+      if (!sessionId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Paramètre sessionId manquant dans la requête" }));
+        return;
+      }
+
+      const activeTransport = activeSessions.get(sessionId);
+      if (!activeTransport) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Session SSE inconnue ou expirée" }));
+        return;
+      }
+
+      await activeTransport.handlePostMessage(req, res);
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Route introuvable" }));
+  });
+
+  httpServer.listen(port, "0.0.0.0", () => {
+    console.error(`[Sophia MCP Server] Serveur HTTP/SSE actif sur http://0.0.0.0:${port}`);
+    console.error(`[Sophia MCP Server] Endpoint SSE    : http://0.0.0.0:${port}/sse`);
+    console.error(`[Sophia MCP Server] Endpoint Health : http://0.0.0.0:${port}/health`);
+  });
+}
+
+/**
+ * Point d'entrée principal : sélectionne automatiquement le mode selon l'environnement.
+ * - Stdio par défaut (CLI, Claude Desktop, Cursor en local)
+ * - HTTP/SSE si PORT est défini (Render, Cloud, Docker) ou si l'option --http est fournie
+ */
+async function main(): Promise<void> {
+  const isHttpRequest =
+    process.argv.includes("--http") ||
+    process.env.MCP_TRANSPORT === "http" ||
+    process.env.PORT !== undefined;
+
+  if (isHttpRequest) {
+    const port = Number.parseInt(process.env.PORT || "3000", 10);
+    await runHttp(port);
+  } else {
+    await runStdio();
+  }
+}
+
 import { fileURLToPath } from "node:url";
 
-// Démarrage uniquement si le script est exécuté directement
+// Démarrage uniquement si le script est exécuté directement en CLI
 const isDirectExecution =
   process.argv[1] !== undefined &&
   fileURLToPath(import.meta.url) === process.argv[1];

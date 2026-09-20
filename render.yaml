@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: mcp-server-sophia
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production

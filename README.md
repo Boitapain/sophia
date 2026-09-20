@@ -45,11 +45,9 @@ npm test
 
 ## Configuration Client
 
-### Claude Desktop (`claude_desktop_config.json`)
+### 1. Usage Local (Stdio)
 
-Emplacement :
-- **macOS :** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows :** `%APPDATA%\Claude\claude_desktop_config.json`
+Dans votre client local (Claude Desktop, Cursor, etc.) :
 
 ```json
 {
@@ -63,3 +61,40 @@ Emplacement :
   }
 }
 ```
+
+### 2. Usage Distant / Cloud (SSE sur Render)
+
+Une fois déployé sur Render (ou en Docker avec `PORT=10000`) :
+```json
+{
+  "mcpServers": {
+    "sophia": {
+      "url": "https://votre-app-sophia.onrender.com/sse"
+    }
+  }
+}
+```
+
+---
+
+## Déploiement Cloud (Render & Docker)
+
+Le serveur supporte automatiquement le mode double :
+- **Stdio :** activé par défaut en local.
+- **HTTP / SSE :** activé automatiquement dès que la variable d'environnement `PORT` est présente (comme sur Render).
+
+### Déploiement Render en 1 clic :
+1. Créez un compte sur [Render.com](https://render.com).
+2. Cliquez sur **New > Blueprint** et connectez ce repository GitHub.
+3. Le fichier [`render.yaml`](file:///Users/vincentbullion/Documents/GitHub/sophia/render.yaml) configure automatiquement le service Web Docker, le port `10000` et la vérification de santé sur `/health`.
+
+---
+
+## Intégration Continue (CI / GitHub Actions)
+
+Le workflow [`.github/workflows/ci.yml`](file:///Users/vincentbullion/Documents/GitHub/sophia/.github/workflows/ci.yml) est déjà configuré :
+- Se déclenche automatiquement sur `push` et `pull_request` vers `main`.
+- Valide la compilation TypeScript sur Node 20 & 22.
+- Exécute les tests unitaires et invariants FSM.
+- Vérifie la construction du conteneur Docker.
+

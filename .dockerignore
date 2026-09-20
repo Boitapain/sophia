@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+.agents
+.gemini
+*.log
+npm-debug.log*
+.DS_Store

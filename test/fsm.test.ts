@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { SophiaFSM, SophiaFsmError } from "../dist/index.js";
+import { SophiaFSM, SophiaFsmError, createSophiaServer } from "../dist/index.js";
 
 describe("Sophia FSM Gatekeeper Tests", () => {
   test("État initial doit être IDLE", () => {
@@ -100,5 +100,10 @@ describe("Sophia FSM Gatekeeper Tests", () => {
     assert.equal(approval.approved, true);
     assert.equal(fsm.getState(), "IDLE");
     assert.equal(fsm.getStatus().history_count, 1);
+  });
+
+  test("Initialisation serveur MCP sans erreur", () => {
+    const server = createSophiaServer();
+    assert.ok(server);
   });
 });
