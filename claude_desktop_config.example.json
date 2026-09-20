@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "sophia": {
+      "command": "node",
+      "args": [
+        "/ABSOLUTE/PATH/TO/sophia/dist/index.js"
+      ]
+    }
+  }
+}

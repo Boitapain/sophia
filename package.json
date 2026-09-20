@@ -1,0 +1,27 @@
+{
+  "name": "mcp-server-sophia",
+  "version": "1.0.0",
+  "description": "Serveur MCP FSM servant de garde-fou au workflow de développement (Sophia)",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mcp-server-sophia": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test test/fsm.test.ts",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "keywords": ["mcp", "fsm", "gatekeeper", "workflow", "modelcontextprotocol"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "typescript": "^5.8.2"
+  }
+}
