@@ -3,3 +3,6 @@ agents/instructions/**
 agents/outils/**
 
 frontend/**
+
+node_modules/
+dist/
