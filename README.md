@@ -62,9 +62,23 @@ Dans votre client local (Claude Desktop, Cursor, etc.) :
 }
 ```
 
-### 2. Usage Distant / Cloud (SSE sur Render)
+### 2. Usage Distant / Cloud (Streamable HTTP & SSE sur Render)
 
-Une fois déployé sur Render (ou en Docker avec `PORT=10000`) :
+Le serveur supporte à la fois **Streamable HTTP** (nouveau standard MCP utilisé par Antigravity, Gemini, Go SDK) et **Legacy SSE** (Claude Desktop, MCP Inspector).
+
+#### Pour Antigravity / Gemini (`mcp_config.json`) :
+```json
+{
+  "mcpServers": {
+    "sophia": {
+      "serverUrl": "https://votre-app-sophia.onrender.com/mcp"
+    }
+  }
+}
+```
+*(L'URL `https://votre-app-sophia.onrender.com/sse` est également supportée de manière transparente).*
+
+#### Pour Claude Desktop / Cursor / Windsurf :
 ```json
 {
   "mcpServers": {

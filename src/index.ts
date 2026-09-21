@@ -3,7 +3,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 /**
@@ -456,17 +458,75 @@ async function runStdio(): Promise<void> {
 }
 
 /**
- * Exécution distante en mode HTTP / Server-Sent Events (SSE) (usage cloud / Render / Docker).
+ * Exécution distante en mode HTTP / Streamable HTTP et Server-Sent Events (SSE).
+ * Supporte :
+ * - Streamable HTTP (MCP over HTTP moderne, Antigravity, Gemini, Go SDK) sur /mcp et /sse
+ * - Legacy SSE (Claude Desktop, etc.) sur /sse (GET) et /messages (POST)
  */
 async function runHttp(port: number): Promise<void> {
-  // Stockage des transports actifs par identifiant de session
-  const activeSessions = new Map<string, SSEServerTransport>();
+  // Stockage des sessions Streamable HTTP (par sessionId)
+  const activeStreamableSessions = new Map<string, StreamableHTTPServerTransport>();
+
+  // Stockage des transports actifs pour le transport legacy SSE
+  const activeSseSessions = new Map<string, SSEServerTransport>();
+
+  const handleStreamableRequest = async (
+    req: http.IncomingMessage,
+    res: http.ServerResponse
+  ): Promise<void> => {
+    const rawSessionId = req.headers["mcp-session-id"];
+    const sessionId = Array.isArray(rawSessionId) ? rawSessionId[0] : rawSessionId;
+
+    if (sessionId) {
+      const activeTransport = activeStreamableSessions.get(sessionId);
+      if (!activeTransport) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32001, message: "Session non trouvée ou expirée" },
+            id: null,
+          })
+        );
+        return;
+      }
+      await activeTransport.handleRequest(req, res);
+      return;
+    }
+
+    // Nouvelle session Streamable HTTP (ex: initialize)
+    const sessionFsm = new SophiaFSM();
+    const sessionServer = createSophiaServer(sessionFsm);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        activeStreamableSessions.set(id, transport);
+      },
+      onsessionclosed: (id) => {
+        activeStreamableSessions.delete(id);
+      },
+    });
+
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        activeStreamableSessions.delete(transport.sessionId);
+      }
+    };
+
+    await sessionServer.connect(transport);
+    await transport.handleRequest(req, res);
+
+    if (transport.sessionId && !activeStreamableSessions.has(transport.sessionId)) {
+      activeStreamableSessions.set(transport.sessionId, transport);
+    }
+  };
 
   const httpServer = http.createServer(async (req, res) => {
-    // Headers CORS pour les clients Web
+    // Headers CORS pour les clients Web et IDEs
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, Accept, Authorization");
+    res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -477,7 +537,7 @@ async function runHttp(port: number): Promise<void> {
     const host = req.headers.host ?? `localhost:${port}`;
     const url = new URL(req.url ?? "/", `http://${host}`);
 
-    // Endpoint de santé pour Render et orchestrateurs
+    // 1. Endpoint de santé pour Render et orchestrateurs
     if (url.pathname === "/health" || url.pathname === "/") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
@@ -485,8 +545,9 @@ async function runHttp(port: number): Promise<void> {
           status: "healthy",
           server: "mcp-server-sophia",
           version: "1.0.0",
-          transport: "SSE",
+          transports: ["StreamableHTTP", "SSE"],
           endpoints: {
+            mcp: "/mcp",
             sse: "/sse",
             messages: "/messages",
           },
@@ -495,17 +556,35 @@ async function runHttp(port: number): Promise<void> {
       return;
     }
 
-    // Établissement du flux SSE (GET /sse)
+    // 2. Streamable HTTP : /mcp (GET, POST, DELETE)
+    if (url.pathname === "/mcp") {
+      await handleStreamableRequest(req, res);
+      return;
+    }
+
+    // 3. Streamable HTTP : POST /sse (pour les clients comme Antigravity configurés avec /sse)
+    if (url.pathname === "/sse" && req.method === "POST") {
+      await handleStreamableRequest(req, res);
+      return;
+    }
+
+    // 4. Streamable HTTP : GET /sse avec header mcp-session-id
+    const hasMcpSessionHeader = req.headers["mcp-session-id"] !== undefined;
+    if (url.pathname === "/sse" && hasMcpSessionHeader) {
+      await handleStreamableRequest(req, res);
+      return;
+    }
+
+    // 5. Legacy SSE : GET /sse (sans mcp-session-id -> nouveau flux SSE pour Claude Desktop / Inspector)
     if (url.pathname === "/sse" && req.method === "GET") {
-      // Instance de FSM dédiée par session client
       const sessionFsm = new SophiaFSM();
       const sessionServer = createSophiaServer(sessionFsm);
       const sseTransport = new SSEServerTransport("/messages", res);
 
-      activeSessions.set(sseTransport.sessionId, sseTransport);
+      activeSseSessions.set(sseTransport.sessionId, sseTransport);
 
       sseTransport.onclose = () => {
-        activeSessions.delete(sseTransport.sessionId);
+        activeSseSessions.delete(sseTransport.sessionId);
         console.error(`[Sophia SSE] Session fermée : ${sseTransport.sessionId}`);
       };
 
@@ -514,7 +593,7 @@ async function runHttp(port: number): Promise<void> {
       return;
     }
 
-    // Réception des messages JSON-RPC (POST /messages?sessionId=...)
+    // 6. Legacy SSE : Réception des messages JSON-RPC (POST /messages?sessionId=...)
     if (url.pathname === "/messages" && req.method === "POST") {
       const sessionId = url.searchParams.get("sessionId");
       if (!sessionId) {
@@ -523,7 +602,7 @@ async function runHttp(port: number): Promise<void> {
         return;
       }
 
-      const activeTransport = activeSessions.get(sessionId);
+      const activeTransport = activeSseSessions.get(sessionId);
       if (!activeTransport) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Session SSE inconnue ou expirée" }));
@@ -539,9 +618,10 @@ async function runHttp(port: number): Promise<void> {
   });
 
   httpServer.listen(port, "0.0.0.0", () => {
-    console.error(`[Sophia MCP Server] Serveur HTTP/SSE actif sur http://0.0.0.0:${port}`);
-    console.error(`[Sophia MCP Server] Endpoint SSE    : http://0.0.0.0:${port}/sse`);
-    console.error(`[Sophia MCP Server] Endpoint Health : http://0.0.0.0:${port}/health`);
+    console.error(`[Sophia MCP Server] Serveur HTTP actif sur http://0.0.0.0:${port}`);
+    console.error(`[Sophia MCP Server] Endpoint Streamable HTTP : http://0.0.0.0:${port}/mcp`);
+    console.error(`[Sophia MCP Server] Endpoint SSE            : http://0.0.0.0:${port}/sse`);
+    console.error(`[Sophia MCP Server] Endpoint Health         : http://0.0.0.0:${port}/health`);
   });
 }
 
